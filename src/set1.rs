@@ -1,6 +1,25 @@
-use std::collections::HashMap;
+use std::io::{self, BufRead};
+use std::{collections::HashMap, fs::File};
 
 use hex::FromHexError;
+
+#[derive(PartialEq, Debug)]
+pub enum Error {
+    DecodeHexError(FromHexError),
+    ReadFileError,
+}
+
+impl From<FromHexError> for Error {
+    fn from(err: FromHexError) -> Self {
+        Self::DecodeHexError(err)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(_: std::io::Error) -> Self {
+        Self::ReadFileError
+    }
+}
 
 pub fn hex_to_base64(hex: &str) -> String {
     if let Ok(bytes) = hex::decode(hex) {
@@ -10,7 +29,7 @@ pub fn hex_to_base64(hex: &str) -> String {
     String::from("")
 }
 
-pub fn fixed_xor(hex: &str) -> Result<String, FromHexError> {
+pub fn fixed_xor(hex: &str) -> Result<String, Error> {
     let rhs_bytes = hex::decode("686974207468652062756c6c277320657965")?;
     let lhs_bytes = hex::decode(hex)?;
 
@@ -59,7 +78,7 @@ fn score_english_cypher(cypher: &Vec<u8>) -> f32 {
     let mut count_chars: HashMap<u8, f32> = HashMap::new();
 
     for c in cypher {
-        let maybe_char = if c.is_ascii_control() || !c.is_ascii() {
+        let maybe_char = if (c.is_ascii_control() && c != &b'\n') || !c.is_ascii() {
             return f32::MAX;
         } else if c.is_ascii_alphabetic() {
             Some(c.to_ascii_lowercase())
@@ -85,10 +104,10 @@ fn score_english_cypher(cypher: &Vec<u8>) -> f32 {
         .sqrt()
 }
 
-pub fn single_byte_xor_cypher(hex: &str) -> Result<String, FromHexError> {
+pub fn single_byte_xor_cypher(hex: &str) -> Result<(f32, String), Error> {
     let cypher = hex::decode(hex)?;
 
-    let (_score, phrase) = (0u8..=255)
+    let (score, phrase) = (0u8..=255)
         .map(|i| cypher.iter().map(|l| l ^ i).collect::<Vec<u8>>())
         .map(|xored| (score_english_cypher(&xored), xored))
         .min_by(|(s1, _), (s2, _)| s1.partial_cmp(&s2).unwrap())
@@ -96,7 +115,25 @@ pub fn single_byte_xor_cypher(hex: &str) -> Result<String, FromHexError> {
 
     let phrase_str = std::str::from_utf8(&phrase).unwrap_or("");
 
-    Ok(phrase_str.to_string())
+    Ok((score, phrase_str.to_string()))
+}
+
+pub fn detect_single_character_xor() -> Result<String, Error> {
+    let file = File::open("./files/4.txt")?;
+    let (_, phrase) = io::BufReader::new(file)
+        .lines()
+        .into_iter()
+        .filter_map(|line| {
+            match line {
+                Ok(l) => single_byte_xor_cypher(&l),
+                Err(e) => Err(e.into()),
+            }
+            .ok()
+        })
+        .min_by(|(s1, _), (s2, _)| s1.partial_cmp(&s2).unwrap())
+        .unwrap();
+
+    Ok(phrase)
 }
 
 #[cfg(test)]
@@ -123,10 +160,18 @@ mod tests {
 
     #[test]
     fn single_byte_xor_cypher_test() {
-        let result = single_byte_xor_cypher(
+        let (_score, phrase) = single_byte_xor_cypher(
             "1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736",
-        );
+        )
+        .unwrap();
 
-        assert_eq!(result, Ok("Cooking MC's like a pound of bacon".to_string()));
+        assert_eq!(phrase, "Cooking MC's like a pound of bacon");
+    }
+
+    #[test]
+    fn detect_single_character_xor_test() {
+        let result = detect_single_character_xor();
+
+        assert_eq!(result, Ok("Now that the party is jumping\n".to_string()));
     }
 }
